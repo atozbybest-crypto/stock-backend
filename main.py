@@ -8,6 +8,7 @@ import requests
 from io import StringIO
 import numpy as np
 
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +20,47 @@ app.add_middleware(
 
 IST = ZoneInfo("Asia/Kolkata")
 NIFTY500_CSV = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
-TECHNIQUES = ['Price above 5 EMA', 'Price above 10 EMA', 'Price above 20 SMA', 'Price above 50 SMA', 'Price above 200 SMA', '5 EMA vs 10 EMA', '10 EMA vs 20 EMA', '20 SMA vs 50 SMA', '50 SMA vs 200 SMA', 'Slope of 20 SMA', 'Slope of 50 SMA', 'Higher highs', 'Higher lows', 'Lower highs', 'Lower lows', 'Day return positive', '3-day return positive', '5-day return positive', '10-day return positive', '20-day return positive', 'RSI 14', 'RSI 9', 'MACD line above signal', 'MACD above zero', 'Stochastic %K above %D', 'Bollinger upper touch', 'Bollinger lower touch', 'Bollinger squeeze', 'ATR rising', 'ATR falling', 'Volatility below average', 'Volatility above average', 'Volume above 20-day avg', 'Volume spike', 'On-balance volume rising', 'OBV falling', 'Price-volume confirmation', 'VWAP above price', 'VWAP below price', 'Support bounce', 'Resistance break', 'Gap up', 'Gap down', 'Close near high', 'Close near low', 'Candlestick bullish', 'Candlestick bearish', 'Doji presence', 'Hammer pattern', 'Shooting star', 'ADX strong trend', 'ADX weak trend', 'Directional +DI above -DI', 'Directional -DI above +DI', 'Momentum 3', 'Momentum 7', 'Momentum 14', 'ROC positive', 'ROC negative', '52-week high proximity', '52-week low proximity']
+
+TECHNIQUES = [
+    'Price above 5 EMA', 'Price above 10 EMA', 'Price above 20 SMA', 'Price above 50 SMA', 'Price above 200 SMA',
+    '5 EMA vs 10 EMA', '10 EMA vs 20 EMA', '20 SMA vs 50 SMA', '50 SMA vs 200 SMA', 'Slope of 20 SMA',
+    'Slope of 50 SMA', 'Higher highs', 'Higher lows', 'Lower highs', 'Lower lows', 'Day return positive',
+    '3-day return positive', '5-day return positive', '10-day return positive', '20-day return positive',
+    'RSI 14', 'RSI 9', 'MACD line above signal', 'MACD above zero', 'Stochastic %K above %D',
+    'Bollinger upper touch', 'Bollinger lower touch', 'Bollinger squeeze', 'ATR rising', 'ATR falling',
+    'Volatility below average', 'Volatility above average', 'Volume above 20-day avg', 'Volume spike',
+    'On-balance volume rising', 'OBV falling', 'Price-volume confirmation', 'VWAP above price',
+    'VWAP below price', 'Support bounce', 'Resistance break', 'Gap up', 'Gap down', 'Close near high',
+    'Close near low', 'Candlestick bullish', 'Candlestick bearish', 'Doji presence', 'Hammer pattern',
+    'Shooting star', 'ADX strong trend', 'ADX weak trend', 'Directional +DI above -DI',
+    'Directional -DI above +DI', 'Momentum 3', 'Momentum 7', 'Momentum 14', 'ROC positive',
+    'ROC negative', '52-week high proximity', '52-week low proximity'
+]
+
+
+def clean_number(value):
+    try:
+        if value is None:
+            return None
+        if isinstance(value, (np.floating, float)):
+            if np.isnan(value) or np.isinf(value):
+                return None
+            return round(float(value), 2)
+        if isinstance(value, (np.integer, int)):
+            return int(value)
+        if pd.isna(value):
+            return None
+        return round(float(value), 2) if isinstance(value, (int, float)) else value
+    except Exception:
+        return None
+
+
+def safe_dict_get(d, keys, default=None):
+    for key in keys:
+        if key in d and d[key] not in [None, "", "N/A"]:
+            return d[key]
+    return default
+
 
 def load_nifty500_symbols():
     try:
@@ -40,6 +81,7 @@ def load_nifty500_symbols():
     except Exception:
         return ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"]
 
+
 def get_history(symbol, interval, period):
     t = yf.Ticker(symbol)
     hist = t.history(interval=interval, period=period, auto_adjust=False, prepost=False)
@@ -47,8 +89,10 @@ def get_history(symbol, interval, period):
         hist = t.history(interval="1d", period="1mo", auto_adjust=False, prepost=False)
     return hist.dropna()
 
+
 def safe(series):
     return pd.Series(series).dropna()
+
 
 def compute_techniques(df):
     close = safe(df["Close"])
@@ -73,8 +117,6 @@ def compute_techniques(df):
     sma50 = close.rolling(50).mean().iloc[-1] if n >= 50 else close.mean()
     sma200 = close.rolling(200).mean().iloc[-1] if n >= 200 else close.mean()
     r = close.pct_change().dropna()
-    ma5 = close.rolling(5).mean().iloc[-1]
-    ma10 = close.rolling(10).mean().iloc[-1] if n >= 10 else close.mean()
     ma20 = sma20
     ma50 = sma50
     ma200 = sma200
@@ -300,14 +342,152 @@ def compute_techniques(df):
             add(t, "Neutral", 50, "Generic")
     return out
 
+
+def make_ratios(info):
+    items = [
+        ("Market Cap", safe_dict_get(info, ["marketCap"])),
+        ("Trailing PE", safe_dict_get(info, ["trailingPE"])),
+        ("Forward PE", safe_dict_get(info, ["forwardPE"])),
+        ("Price to Book", safe_dict_get(info, ["priceToBook"])),
+        ("Dividend Yield", safe_dict_get(info, ["dividendYield"])),
+        ("ROE", safe_dict_get(info, ["returnOnEquity"])),
+        ("ROA", safe_dict_get(info, ["returnOnAssets"])),
+        ("Debt to Equity", safe_dict_get(info, ["debtToEquity"])),
+        ("Current Ratio", safe_dict_get(info, ["currentRatio"])),
+        ("Quick Ratio", safe_dict_get(info, ["quickRatio"])),
+        ("Profit Margin", safe_dict_get(info, ["profitMargins"])),
+        ("Operating Margin", safe_dict_get(info, ["operatingMargins"])),
+    ]
+    return [{"label": k, "value": clean_number(v)} for k, v in items if v is not None]
+
+
+def statement_to_list(df, limit=8):
+    try:
+        if df is None or df.empty:
+            return []
+        x = df.copy().fillna(np.nan)
+        cols = list(x.columns)[:limit]
+        out = []
+        for row_name in x.index[:20]:
+            item = {"metric": str(row_name)}
+            has_value = False
+            for col in cols:
+                key = str(col.date()) if hasattr(col, "date") else str(col)
+                val = clean_number(x.loc[row_name, col])
+                item[key] = val
+                if val is not None:
+                    has_value = True
+            if has_value:
+                out.append(item)
+        return out
+    except Exception:
+        return []
+
+
+def make_quarterly_data(quarterly_financials):
+    rows = statement_to_list(quarterly_financials, limit=4)
+    return rows[:12]
+
+
+def make_corp_action(actions_df):
+    try:
+        if actions_df is None or actions_df.empty:
+            return []
+        df = actions_df.reset_index().fillna("")
+        out = []
+        for _, row in df.tail(10).iterrows():
+            date_col = row.iloc[0]
+            action = None
+            value = None
+            for col in df.columns[1:]:
+                if row[col] not in ["", None, 0]:
+                    action = str(col)
+                    value = clean_number(row[col])
+                    break
+            out.append({
+                "date": str(date_col.date()) if hasattr(date_col, "date") else str(date_col),
+                "action": action or "Corporate action",
+                "value": value
+            })
+        return out[::-1]
+    except Exception:
+        return []
+
+
+def make_news(news_items):
+    out = []
+    try:
+        for item in (news_items or [])[:10]:
+            content = item.get("content", item)
+            title = content.get("title") or item.get("title")
+            url = content.get("canonicalUrl", {}).get("url") or content.get("clickThroughUrl", {}).get("url") or item.get("link")
+            publisher = content.get("provider", {}).get("displayName") or content.get("publisher")
+            pub_date = content.get("pubDate") or item.get("providerPublishTime")
+            summary = content.get("summary") or ""
+            if title:
+                out.append({
+                    "title": title,
+                    "publisher": publisher,
+                    "link": url,
+                    "published": str(pub_date) if pub_date is not None else None,
+                    "summary": summary[:220] if summary else ""
+                })
+    except Exception:
+        return []
+    return out
+
+
+def make_shareholding(info):
+    holders = [
+        ("Promoter / Insider Holding", safe_dict_get(info, ["heldPercentInsiders"])),
+        ("Institution Holding", safe_dict_get(info, ["heldPercentInstitutions"])),
+        ("Float Shares", safe_dict_get(info, ["floatShares"])),
+        ("Shares Outstanding", safe_dict_get(info, ["sharesOutstanding"])),
+        ("Implied Shares Outstanding", safe_dict_get(info, ["impliedSharesOutstanding"])),
+    ]
+    return [{"label": k, "value": clean_number(v)} for k, v in holders if v is not None]
+
+
+def make_investors(info):
+    items = [
+        ("Company", safe_dict_get(info, ["longName", "shortName"])),
+        ("Sector", safe_dict_get(info, ["sector"])),
+        ("Industry", safe_dict_get(info, ["industry"])),
+        ("Website", safe_dict_get(info, ["website"])),
+        ("Country", safe_dict_get(info, ["country"])),
+        ("Employees", safe_dict_get(info, ["fullTimeEmployees"])),
+    ]
+    return [{"label": k, "value": v} for k, v in items if v is not None]
+
+
+def make_reports(symbol, info):
+    website = safe_dict_get(info, ["website"])
+    company_name = safe_dict_get(info, ["longName", "shortName"], symbol.upper())
+    reports = []
+    if website:
+        reports.append({
+            "title": f"{company_name} Website",
+            "type": "Company",
+            "link": website
+        })
+    reports.append({
+        "title": f"{company_name} on Yahoo Finance",
+        "type": "Market profile",
+        "link": f"https://finance.yahoo.com/quote/{symbol}"
+    })
+    return reports
+
+
 @app.get("/")
 def home():
     return {"status": "ok", "message": "Stock analyser backend running"}
+
 
 @app.get("/api/yahoo/list")
 def ticker_list():
     syms = load_nifty500_symbols()
     return {"count": len(syms), "symbols": syms, "sample": syms[:20]}
+
 
 @app.get("/api/yahoo/quote")
 def quote(symbol: str = Query(...)):
@@ -328,30 +508,112 @@ def quote(symbol: str = Query(...)):
         "source": f"yfinance {interval}"
     }
 
+
 @app.get("/api/yahoo/analyse")
 def analyse(symbol: str = Query(...)):
     now = datetime.now(IST)
     is_open = now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30)
     interval = "30m" if is_open else "1d"
     period = "5d" if is_open else "6mo"
+
+    ticker = yf.Ticker(symbol)
     hist = get_history(symbol, interval, period)
     if hist.empty:
         return {"symbol": symbol.upper(), "error": "No data"}
-    close = hist["Close"].astype(float).tolist()
+
     techs = compute_techniques(hist)
-    scores = [t['score'] for t in techs]
+    scores = [t["score"] for t in techs]
     overall = round(float(np.mean(scores)), 1)
     short = round(float(np.mean(scores[:20])), 1)
     long = round(float(np.mean(scores[20:40])), 1)
     risk = round(float(np.mean(scores[40:])), 1)
+
+    info = {}
+    try:
+        info = ticker.info or {}
+    except Exception:
+        info = {}
+
+    fund_parts = [
+        safe_dict_get(info, ["returnOnEquity"]),
+        safe_dict_get(info, ["profitMargins"]),
+        safe_dict_get(info, ["operatingMargins"]),
+        safe_dict_get(info, ["revenueGrowth"]),
+        safe_dict_get(info, ["earningsGrowth"]),
+    ]
+    fund_values = [float(x) * 100 if x is not None and abs(float(x)) <= 1 else float(x) for x in fund_parts if x is not None]
+    fund = round(float(np.mean(fund_values)), 1) if fund_values else 50.0
+    fund = max(0.0, min(100.0, fund))
+
     signal = "Bullish" if overall >= 70 else "Positive" if overall >= 55 else "Neutral" if overall >= 42 else "Cautious"
-    verdict_reason = "Strong technical mix with broad confirmation." if signal == "Bullish" else "Mixed signals across trend, momentum, and risk." if signal == "Neutral" else "Weak trend or elevated risk across multiple techniques."
+    verdict_reason = (
+        "Strong technical mix with broad confirmation." if signal == "Bullish"
+        else "Constructive setup with more positives than negatives." if signal == "Positive"
+        else "Mixed signals across trend, momentum, and risk." if signal == "Neutral"
+        else "Weak trend or elevated risk across multiple techniques."
+    )
+
+    quarterly_fin = None
+    yearly_fin = None
+    balance_sheet = None
+    quarterly_balance = None
+    cashflow = None
+    quarterly_cashflow = None
+    actions = None
+    news_items = None
+
+    try:
+        quarterly_fin = ticker.quarterly_financials
+    except Exception:
+        quarterly_fin = None
+    try:
+        yearly_fin = ticker.financials
+    except Exception:
+        yearly_fin = None
+    try:
+        balance_sheet = ticker.balance_sheet
+    except Exception:
+        balance_sheet = None
+    try:
+        quarterly_balance = ticker.quarterly_balance_sheet
+    except Exception:
+        quarterly_balance = None
+    try:
+        cashflow = ticker.cashflow
+    except Exception:
+        cashflow = None
+    try:
+        quarterly_cashflow = ticker.quarterly_cashflow
+    except Exception:
+        quarterly_cashflow = None
+    try:
+        actions = ticker.actions
+    except Exception:
+        actions = None
+    try:
+        news_items = ticker.news
+    except Exception:
+        news_items = []
+
+    ratios = make_ratios(info)
+    shareholding = make_shareholding(info)
+    quarterly = make_quarterly_data(quarterly_fin)
+    pnl = statement_to_list(yearly_fin, limit=4)
+    balance_sheet_list = statement_to_list(balance_sheet, limit=4)
+    cashflow_list = statement_to_list(cashflow, limit=4)
+    corp_action = make_corp_action(actions)
+    investors = make_investors(info)
+    reports = make_reports(symbol, info)
+    news = make_news(news_items)
+
+    name = safe_dict_get(info, ["longName", "shortName"], symbol.upper())
+
     return {
         "symbol": symbol.upper(),
-        "name": symbol.upper(),
+        "name": name,
         "short": short,
         "long": long,
-        "fund": 50,
+        "fund": fund,
         "risk": risk,
         "overall": overall,
         "signal": signal,
@@ -359,9 +621,27 @@ def analyse(symbol: str = Query(...)):
         "technique_count": len(techs),
         "verdict_reason": verdict_reason,
         "market_status": "open" if is_open else "closed",
-        "close_used": close[-1],
-        "source": f"yfinance {interval}"
+        "close_used": clean_number(hist["Close"].iloc[-1]),
+        "source": f"yfinance {interval}",
+        "ratios": ratios,
+        "shareholding": shareholding,
+        "quarterly": quarterly,
+        "pnl": pnl,
+        "balanceSheet": balance_sheet_list,
+        "cashflow": cashflow_list,
+        "corpAction": corp_action,
+        "investors": investors,
+        "reports": reports,
+        "news": news,
+        "meta": {
+            "sector": safe_dict_get(info, ["sector"]),
+            "industry": safe_dict_get(info, ["industry"]),
+            "exchange": safe_dict_get(info, ["exchange"]),
+            "currency": safe_dict_get(info, ["currency"]),
+            "website": safe_dict_get(info, ["website"])
+        }
     }
+
 
 @app.get("/api/yahoo/chart")
 def chart(symbol: str = Query(...), period: str = Query("1mo"), interval: str = Query("1d")):
