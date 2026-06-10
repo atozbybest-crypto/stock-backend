@@ -22,19 +22,19 @@ IST = ZoneInfo("Asia/Kolkata")
 NIFTY500_CSV = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
 
 TECHNIQUES = [
-    'Price above 5 EMA', 'Price above 10 EMA', 'Price above 20 SMA', 'Price above 50 SMA', 'Price above 200 SMA',
-    '5 EMA vs 10 EMA', '10 EMA vs 20 EMA', '20 SMA vs 50 SMA', '50 SMA vs 200 SMA', 'Slope of 20 SMA',
-    'Slope of 50 SMA', 'Higher highs', 'Higher lows', 'Lower highs', 'Lower lows', 'Day return positive',
-    '3-day return positive', '5-day return positive', '10-day return positive', '20-day return positive',
-    'RSI 14', 'RSI 9', 'MACD line above signal', 'MACD above zero', 'Stochastic %K above %D',
-    'Bollinger upper touch', 'Bollinger lower touch', 'Bollinger squeeze', 'ATR rising', 'ATR falling',
-    'Volatility below average', 'Volatility above average', 'Volume above 20-day avg', 'Volume spike',
-    'On-balance volume rising', 'OBV falling', 'Price-volume confirmation', 'VWAP above price',
-    'VWAP below price', 'Support bounce', 'Resistance break', 'Gap up', 'Gap down', 'Close near high',
-    'Close near low', 'Candlestick bullish', 'Candlestick bearish', 'Doji presence', 'Hammer pattern',
-    'Shooting star', 'ADX strong trend', 'ADX weak trend', 'Directional +DI above -DI',
-    'Directional -DI above +DI', 'Momentum 3', 'Momentum 7', 'Momentum 14', 'ROC positive',
-    'ROC negative', '52-week high proximity', '52-week low proximity'
+    "Price above 5 EMA", "Price above 10 EMA", "Price above 20 SMA", "Price above 50 SMA", "Price above 200 SMA",
+    "5 EMA vs 10 EMA", "10 EMA vs 20 EMA", "20 SMA vs 50 SMA", "50 SMA vs 200 SMA", "Slope of 20 SMA",
+    "Slope of 50 SMA", "Higher highs", "Higher lows", "Lower highs", "Lower lows", "Day return positive",
+    "3-day return positive", "5-day return positive", "10-day return positive", "20-day return positive",
+    "RSI 14", "RSI 9", "MACD line above signal", "MACD above zero", "Stochastic %K above %D",
+    "Bollinger upper touch", "Bollinger lower touch", "Bollinger squeeze", "ATR rising", "ATR falling",
+    "Volatility below average", "Volatility above average", "Volume above 20-day avg", "Volume spike",
+    "On-balance volume rising", "OBV falling", "Price-volume confirmation", "VWAP above price",
+    "VWAP below price", "Support bounce", "Resistance break", "Gap up", "Gap down", "Close near high",
+    "Close near low", "Candlestick bullish", "Candlestick bearish", "Doji presence", "Hammer pattern",
+    "Shooting star", "ADX strong trend", "ADX weak trend", "Directional +DI above -DI",
+    "Directional -DI above +DI", "Momentum 3", "Momentum 7", "Momentum 14", "ROC positive",
+    "ROC negative", "52-week high proximity", "52-week low proximity"
 ]
 
 
@@ -50,16 +50,104 @@ def clean_number(value):
             return int(value)
         if pd.isna(value):
             return None
+        if isinstance(value, str):
+            s = value.strip()
+            if s == "":
+                return None
+            return value
         return round(float(value), 2) if isinstance(value, (int, float)) else value
     except Exception:
         return None
 
 
+def format_percent(value):
+    try:
+        if value is None:
+            return None
+        v = float(value)
+        if abs(v) <= 1:
+            v *= 100
+        return f"{round(v, 2)}%"
+    except Exception:
+        return None
+
+
+def format_large_number(value):
+    try:
+        if value is None:
+            return None
+        v = float(value)
+        if abs(v) >= 1e12:
+            return f"{round(v / 1e12, 2)}T"
+        if abs(v) >= 1e9:
+            return f"{round(v / 1e9, 2)}B"
+        if abs(v) >= 1e7:
+            return f"{round(v / 1e7, 2)}Cr"
+        if abs(v) >= 1e5:
+            return f"{round(v / 1e5, 2)}L"
+        return f"{round(v, 2)}"
+    except Exception:
+        return clean_number(value)
+
+
 def safe_dict_get(d, keys, default=None):
+    if not isinstance(d, dict):
+        return default
     for key in keys:
-        if key in d and d[key] not in [None, "", "N/A"]:
+        if key in d and d[key] not in [None, "", "N/A", "nan"]:
             return d[key]
     return default
+
+
+def get_fast_info_dict(ticker):
+    try:
+        fi = ticker.fast_info
+        if fi is None:
+            return {}
+        try:
+            return dict(fi)
+        except Exception:
+            out = {}
+            for k in dir(fi):
+                if k.startswith("_"):
+                    continue
+                try:
+                    val = getattr(fi, k)
+                    if not callable(val):
+                        out[k] = val
+                except Exception:
+                    pass
+            return out
+    except Exception:
+        return {}
+
+
+def merge_info(ticker):
+    info = {}
+    try:
+        raw = ticker.info or {}
+        if isinstance(raw, dict):
+            info.update(raw)
+    except Exception:
+        pass
+
+    fast = get_fast_info_dict(ticker)
+    alias_map = {
+        "market_cap": "marketCap",
+        "last_price": "currentPrice",
+        "previous_close": "previousClose",
+        "shares": "sharesOutstanding",
+        "currency": "currency",
+        "exchange": "exchange",
+        "year_high": "fiftyTwoWeekHigh",
+        "year_low": "fiftyTwoWeekLow",
+    }
+    for k, v in fast.items():
+        info.setdefault(k, v)
+        if k in alias_map:
+            info.setdefault(alias_map[k], v)
+
+    return info
 
 
 def load_nifty500_symbols():
@@ -86,8 +174,10 @@ def get_history(symbol, interval, period):
     t = yf.Ticker(symbol)
     hist = t.history(interval=interval, period=period, auto_adjust=False, prepost=False)
     if hist is None or hist.empty:
-        hist = t.history(interval="1d", period="1mo", auto_adjust=False, prepost=False)
-    return hist.dropna()
+        hist = t.history(interval="1d", period="6mo", auto_adjust=False, prepost=False)
+    if hist is None or hist.empty:
+        return pd.DataFrame()
+    return hist.dropna(how="all")
 
 
 def safe(series):
@@ -162,7 +252,7 @@ def compute_techniques(df):
     shooting = (last < prev) and ((high.iloc[-1] - last) > 2 * abs(last - prev)) if len(high) else False
     adx = abs((high.diff().abs().rolling(14).mean().iloc[-1] if len(high) >= 14 else 0) - (low.diff().abs().rolling(14).mean().iloc[-1] if len(low) >= 14 else 0))
     plus_di = (high.diff().clip(lower=0).rolling(14).mean().iloc[-1] if len(high) >= 14 else 0)
-    minus_di = (-low.diff().clip(upper=0).rolling(14).mean().iloc[-1] if len(low) >= 14 else 0)
+    minus_di = (-low.diff().clip(upper=0)).rolling(14).mean().iloc[-1] if len(low) >= 14 else 0
 
     for t in TECHNIQUES:
         if t == "Price above 5 EMA":
@@ -343,29 +433,11 @@ def compute_techniques(df):
     return out
 
 
-def make_ratios(info):
-    items = [
-        ("Market Cap", safe_dict_get(info, ["marketCap"])),
-        ("Trailing PE", safe_dict_get(info, ["trailingPE"])),
-        ("Forward PE", safe_dict_get(info, ["forwardPE"])),
-        ("Price to Book", safe_dict_get(info, ["priceToBook"])),
-        ("Dividend Yield", safe_dict_get(info, ["dividendYield"])),
-        ("ROE", safe_dict_get(info, ["returnOnEquity"])),
-        ("ROA", safe_dict_get(info, ["returnOnAssets"])),
-        ("Debt to Equity", safe_dict_get(info, ["debtToEquity"])),
-        ("Current Ratio", safe_dict_get(info, ["currentRatio"])),
-        ("Quick Ratio", safe_dict_get(info, ["quickRatio"])),
-        ("Profit Margin", safe_dict_get(info, ["profitMargins"])),
-        ("Operating Margin", safe_dict_get(info, ["operatingMargins"])),
-    ]
-    return [{"label": k, "value": clean_number(v)} for k, v in items if v is not None]
-
-
 def statement_to_list(df, limit=8):
     try:
         if df is None or df.empty:
             return []
-        x = df.copy().fillna(np.nan)
+        x = df.copy().replace([np.inf, -np.inf], np.nan).fillna(np.nan)
         cols = list(x.columns)[:limit]
         out = []
         for row_name in x.index[:20]:
@@ -437,15 +509,76 @@ def make_news(news_items):
     return out
 
 
-def make_shareholding(info):
-    holders = [
-        ("Promoter / Insider Holding", safe_dict_get(info, ["heldPercentInsiders"])),
-        ("Institution Holding", safe_dict_get(info, ["heldPercentInstitutions"])),
-        ("Float Shares", safe_dict_get(info, ["floatShares"])),
-        ("Shares Outstanding", safe_dict_get(info, ["sharesOutstanding"])),
-        ("Implied Shares Outstanding", safe_dict_get(info, ["impliedSharesOutstanding"])),
+def make_ratios(info, hist=None):
+    current_price = safe_dict_get(info, ["currentPrice", "lastPrice", "regularMarketPrice"])
+    previous_close = safe_dict_get(info, ["previousClose", "regularMarketPreviousClose"])
+    market_cap = safe_dict_get(info, ["marketCap"])
+    shares_outstanding = safe_dict_get(info, ["sharesOutstanding"])
+
+    if market_cap is None and current_price is not None and shares_outstanding is not None:
+        try:
+            market_cap = float(current_price) * float(shares_outstanding)
+        except Exception:
+            pass
+
+    fifty_two_high = safe_dict_get(info, ["fiftyTwoWeekHigh", "yearHigh"])
+    fifty_two_low = safe_dict_get(info, ["fiftyTwoWeekLow", "yearLow"])
+
+    if hist is not None and not hist.empty:
+        try:
+            h52 = hist["High"].tail(252).max()
+            l52 = hist["Low"].tail(252).min()
+            fifty_two_high = fifty_two_high if fifty_two_high is not None else clean_number(h52)
+            fifty_two_low = fifty_two_low if fifty_two_low is not None else clean_number(l52)
+        except Exception:
+            pass
+
+    items = [
+        ("Market Cap", format_large_number(market_cap)),
+        ("Current Price", clean_number(current_price)),
+        ("Previous Close", clean_number(previous_close)),
+        ("Trailing PE", clean_number(safe_dict_get(info, ["trailingPE"]))),
+        ("Forward PE", clean_number(safe_dict_get(info, ["forwardPE"]))),
+        ("Price to Book", clean_number(safe_dict_get(info, ["priceToBook"]))),
+        ("Dividend Yield", format_percent(safe_dict_get(info, ["dividendYield"]))),
+        ("ROE", format_percent(safe_dict_get(info, ["returnOnEquity"]))),
+        ("ROA", format_percent(safe_dict_get(info, ["returnOnAssets"]))),
+        ("Debt to Equity", clean_number(safe_dict_get(info, ["debtToEquity"]))),
+        ("Current Ratio", clean_number(safe_dict_get(info, ["currentRatio"]))),
+        ("Quick Ratio", clean_number(safe_dict_get(info, ["quickRatio"]))),
+        ("Profit Margin", format_percent(safe_dict_get(info, ["profitMargins"]))),
+        ("Operating Margin", format_percent(safe_dict_get(info, ["operatingMargins"]))),
+        ("Revenue Growth", format_percent(safe_dict_get(info, ["revenueGrowth"]))),
+        ("Earnings Growth", format_percent(safe_dict_get(info, ["earningsGrowth"]))),
+        ("52 Week High", clean_number(fifty_two_high)),
+        ("52 Week Low", clean_number(fifty_two_low)),
     ]
-    return [{"label": k, "value": clean_number(v)} for k, v in holders if v is not None]
+
+    out = [{"label": k, "value": v} for k, v in items if v is not None]
+    if not out:
+        out = [{"label": "Status", "value": "Yahoo fundamentals unavailable for this symbol"}]
+    return out
+
+
+def make_shareholding(info):
+    insiders = safe_dict_get(info, ["heldPercentInsiders"])
+    institutions = safe_dict_get(info, ["heldPercentInstitutions"])
+    float_shares = safe_dict_get(info, ["floatShares"])
+    shares_outstanding = safe_dict_get(info, ["sharesOutstanding", "shares"])
+    implied_shares = safe_dict_get(info, ["impliedSharesOutstanding"])
+
+    holders = [
+        ("Promoter / Insider Holding", format_percent(insiders)),
+        ("Institution Holding", format_percent(institutions)),
+        ("Float Shares", format_large_number(float_shares)),
+        ("Shares Outstanding", format_large_number(shares_outstanding)),
+        ("Implied Shares Outstanding", format_large_number(implied_shares)),
+    ]
+
+    out = [{"label": k, "value": v} for k, v in holders if v is not None]
+    if not out:
+        out = [{"label": "Status", "value": "Shareholding data unavailable from Yahoo"}]
+    return out
 
 
 def make_investors(info):
@@ -455,9 +588,14 @@ def make_investors(info):
         ("Industry", safe_dict_get(info, ["industry"])),
         ("Website", safe_dict_get(info, ["website"])),
         ("Country", safe_dict_get(info, ["country"])),
-        ("Employees", safe_dict_get(info, ["fullTimeEmployees"])),
+        ("Employees", clean_number(safe_dict_get(info, ["fullTimeEmployees"]))),
+        ("Exchange", safe_dict_get(info, ["exchange"])),
+        ("Currency", safe_dict_get(info, ["currency"])),
     ]
-    return [{"label": k, "value": v} for k, v in items if v is not None]
+    out = [{"label": k, "value": v} for k, v in items if v is not None]
+    if not out:
+        out = [{"label": "Status", "value": "Investor profile unavailable"}]
+    return out
 
 
 def make_reports(symbol, info):
@@ -498,11 +636,14 @@ def quote(symbol: str = Query(...)):
     hist = get_history(symbol, interval, period)
     if hist.empty:
         return {"symbol": symbol.upper(), "error": "No data"}
+
     close = float(hist.iloc[-1]["Close"])
+    prev_close = float(hist.iloc[-2]["Close"]) if len(hist) > 1 else close
+
     return {
         "symbol": symbol.upper(),
         "price": close,
-        "previousClose": float(hist.iloc[-2]["Close"]) if len(hist) > 1 else close,
+        "previousClose": prev_close,
         "market_status": "open" if is_open else "closed",
         "timestamp": str(hist.index[-1]),
         "source": f"yfinance {interval}"
@@ -528,11 +669,7 @@ def analyse(symbol: str = Query(...)):
     long = round(float(np.mean(scores[20:40])), 1)
     risk = round(float(np.mean(scores[40:])), 1)
 
-    info = {}
-    try:
-        info = ticker.info or {}
-    except Exception:
-        info = {}
+    info = merge_info(ticker)
 
     fund_parts = [
         safe_dict_get(info, ["returnOnEquity"]),
@@ -541,7 +678,14 @@ def analyse(symbol: str = Query(...)):
         safe_dict_get(info, ["revenueGrowth"]),
         safe_dict_get(info, ["earningsGrowth"]),
     ]
-    fund_values = [float(x) * 100 if x is not None and abs(float(x)) <= 1 else float(x) for x in fund_parts if x is not None]
+    fund_values = []
+    for x in fund_parts:
+        try:
+            fx = float(x)
+            fund_values.append(fx * 100 if abs(fx) <= 1 else fx)
+        except Exception:
+            pass
+
     fund = round(float(np.mean(fund_values)), 1) if fund_values else 50.0
     fund = max(0.0, min(100.0, fund))
 
@@ -556,46 +700,36 @@ def analyse(symbol: str = Query(...)):
     quarterly_fin = None
     yearly_fin = None
     balance_sheet = None
-    quarterly_balance = None
     cashflow = None
-    quarterly_cashflow = None
     actions = None
-    news_items = None
+    news_items = []
 
     try:
         quarterly_fin = ticker.quarterly_financials
     except Exception:
-        quarterly_fin = None
+        pass
     try:
         yearly_fin = ticker.financials
     except Exception:
-        yearly_fin = None
+        pass
     try:
         balance_sheet = ticker.balance_sheet
     except Exception:
-        balance_sheet = None
-    try:
-        quarterly_balance = ticker.quarterly_balance_sheet
-    except Exception:
-        quarterly_balance = None
+        pass
     try:
         cashflow = ticker.cashflow
     except Exception:
-        cashflow = None
-    try:
-        quarterly_cashflow = ticker.quarterly_cashflow
-    except Exception:
-        quarterly_cashflow = None
+        pass
     try:
         actions = ticker.actions
     except Exception:
-        actions = None
+        pass
     try:
-        news_items = ticker.news
+        news_items = ticker.news or []
     except Exception:
         news_items = []
 
-    ratios = make_ratios(info)
+    ratios = make_ratios(info, hist)
     shareholding = make_shareholding(info)
     quarterly = make_quarterly_data(quarterly_fin)
     pnl = statement_to_list(yearly_fin, limit=4)
@@ -607,6 +741,16 @@ def analyse(symbol: str = Query(...)):
     news = make_news(news_items)
 
     name = safe_dict_get(info, ["longName", "shortName"], symbol.upper())
+
+    debug = {
+        "info_key_count": len(info.keys()) if isinstance(info, dict) else 0,
+        "has_trailingPE": safe_dict_get(info, ["trailingPE"]) is not None,
+        "has_priceToBook": safe_dict_get(info, ["priceToBook"]) is not None,
+        "has_heldPercentInsiders": safe_dict_get(info, ["heldPercentInsiders"]) is not None,
+        "has_heldPercentInstitutions": safe_dict_get(info, ["heldPercentInstitutions"]) is not None,
+        "has_marketCap": safe_dict_get(info, ["marketCap"]) is not None,
+        "has_sharesOutstanding": safe_dict_get(info, ["sharesOutstanding", "shares"]) is not None,
+    }
 
     return {
         "symbol": symbol.upper(),
@@ -639,7 +783,8 @@ def analyse(symbol: str = Query(...)):
             "exchange": safe_dict_get(info, ["exchange"]),
             "currency": safe_dict_get(info, ["currency"]),
             "website": safe_dict_get(info, ["website"])
-        }
+        },
+        "debug": debug
     }
 
 
@@ -648,9 +793,11 @@ def chart(symbol: str = Query(...), period: str = Query("1mo"), interval: str = 
     hist = get_history(symbol, interval, period)
     if hist.empty:
         return {"symbol": symbol.upper(), "error": "No data"}
+
     hist = hist.reset_index()
     time_col = hist.columns[0]
     out = hist[[time_col, "Close"]].copy()
     out.columns = ["time", "close"]
     out["time"] = out["time"].astype(str)
+
     return {"symbol": symbol.upper(), "points": out.tail(200).to_dict(orient="records")}
