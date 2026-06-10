@@ -8,8 +8,8 @@ import requests
 from io import StringIO
 import numpy as np
 
-
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -142,6 +142,7 @@ def merge_info(ticker):
         "year_high": "fiftyTwoWeekHigh",
         "year_low": "fiftyTwoWeekLow",
     }
+
     for k, v in fast.items():
         info.setdefault(k, v)
         if k in alias_map:
@@ -250,9 +251,13 @@ def compute_techniques(df):
     doji = abs(last - prev) / prev < 0.002 if prev else False
     hammer = (last > prev) and ((last - low.iloc[-1]) > 2 * abs(last - prev)) if len(low) else False
     shooting = (last < prev) and ((high.iloc[-1] - last) > 2 * abs(last - prev)) if len(high) else False
-    adx = abs((high.diff().abs().rolling(14).mean().iloc[-1] if len(high) >= 14 else 0) - (low.diff().abs().rolling(14).mean().iloc[-1] if len(low) >= 14 else 0))
-    plus_di = (high.diff().clip(lower=0).rolling(14).mean().iloc[-1] if len(high) >= 14 else 0)
-    minus_di = (-low.diff().clip(upper=0)).rolling(14).mean().iloc[-1] if len(low) >= 14 else 0)
+
+    adx = abs(
+        (high.diff().abs().rolling(14).mean().iloc[-1] if len(high) >= 14 else 0)
+        - (low.diff().abs().rolling(14).mean().iloc[-1] if len(low) >= 14 else 0)
+    )
+    plus_di = high.diff().clip(lower=0).rolling(14).mean().iloc[-1] if len(high) >= 14 else 0
+    minus_di = (-low.diff().clip(upper=0)).rolling(14).mean().iloc[-1] if len(low) >= 14 else 0
 
     for t in TECHNIQUES:
         if t == "Price above 5 EMA":
@@ -430,6 +435,7 @@ def compute_techniques(df):
             add(t, "Bearish" if v else "Neutral", 58 if v else 42, "52-week low proximity")
         else:
             add(t, "Neutral", 50, "Generic")
+
     return out
 
 
@@ -513,7 +519,7 @@ def make_ratios(info, hist=None):
     current_price = safe_dict_get(info, ["currentPrice", "lastPrice", "regularMarketPrice", "last_price"])
     previous_close = safe_dict_get(info, ["previousClose", "regularMarketPreviousClose", "previous_close"])
     market_cap = safe_dict_get(info, ["marketCap", "market_cap"])
-    shares_outstanding = safe_dict_get(info, ["sharesOutstanding", "sharesOutstanding", "shares"])
+    shares_outstanding = safe_dict_get(info, ["sharesOutstanding", "shares"])
 
     if market_cap is None and current_price is not None and shares_outstanding is not None:
         try:
@@ -694,6 +700,7 @@ def analyse(symbol: str = Query(...)):
         safe_dict_get(info, ["revenueGrowth"]),
         safe_dict_get(info, ["earningsGrowth"]),
     ]
+
     fund_values = []
     for x in fund_parts:
         try:
