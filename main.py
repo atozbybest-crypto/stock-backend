@@ -631,22 +631,38 @@ def ticker_list():
 def quote(symbol: str = Query(...)):
     now = datetime.now(IST)
     is_open = now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30)
-    interval = "30m" if is_open else "1d"
-    period = "5d" if is_open else "1mo"
-    hist = get_history(symbol, interval, period)
+
+    ticker = yf.Ticker(symbol)
+    hist = get_history(symbol, "1d", "1mo")
     if hist.empty:
         return {"symbol": symbol.upper(), "error": "No data"}
 
-    close = float(hist.iloc[-1]["Close"])
-    prev_close = float(hist.iloc[-2]["Close"]) if len(hist) > 1 else close
+    latest_price = None
+    previous_close = None
+    source = "yfinance history"
+
+    try:
+        fi = get_fast_info_dict(ticker)
+        latest_price = safe_dict_get(fi, ["lastPrice", "last_price", "regularMarketPrice"])
+        previous_close = safe_dict_get(fi, ["previousClose", "previous_close", "regularMarketPreviousClose"])
+        if latest_price is not None:
+            source = "yfinance fast_info"
+    except Exception:
+        pass
+
+    if latest_price is None:
+        latest_price = clean_number(hist.iloc[-1]["Close"])
+
+    if previous_close is None:
+        previous_close = clean_number(hist.iloc[-2]["Close"]) if len(hist) > 1 else latest_price
 
     return {
         "symbol": symbol.upper(),
-        "price": close,
-        "previousClose": prev_close,
+        "price": clean_number(latest_price),
+        "previousClose": clean_number(previous_close),
         "market_status": "open" if is_open else "closed",
         "timestamp": str(hist.index[-1]),
-        "source": f"yfinance {interval}"
+        "source": source
     }
 
 
