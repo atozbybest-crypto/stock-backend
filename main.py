@@ -252,7 +252,7 @@ def compute_techniques(df):
     shooting = (last < prev) and ((high.iloc[-1] - last) > 2 * abs(last - prev)) if len(high) else False
     adx = abs((high.diff().abs().rolling(14).mean().iloc[-1] if len(high) >= 14 else 0) - (low.diff().abs().rolling(14).mean().iloc[-1] if len(low) >= 14 else 0))
     plus_di = (high.diff().clip(lower=0).rolling(14).mean().iloc[-1] if len(high) >= 14 else 0)
-    minus_di = (-low.diff().clip(upper=0)).rolling(14).mean().iloc[-1] if len(low) >= 14 else 0
+    minus_di = (-low.diff().clip(upper=0)).rolling(14).mean().iloc[-1] if len(low) >= 14 else 0)
 
     for t in TECHNIQUES:
         if t == "Price above 5 EMA":
@@ -510,10 +510,10 @@ def make_news(news_items):
 
 
 def make_ratios(info, hist=None):
-    current_price = safe_dict_get(info, ["currentPrice", "lastPrice", "regularMarketPrice"])
-    previous_close = safe_dict_get(info, ["previousClose", "regularMarketPreviousClose"])
-    market_cap = safe_dict_get(info, ["marketCap"])
-    shares_outstanding = safe_dict_get(info, ["sharesOutstanding"])
+    current_price = safe_dict_get(info, ["currentPrice", "lastPrice", "regularMarketPrice", "last_price"])
+    previous_close = safe_dict_get(info, ["previousClose", "regularMarketPreviousClose", "previous_close"])
+    market_cap = safe_dict_get(info, ["marketCap", "market_cap"])
+    shares_outstanding = safe_dict_get(info, ["sharesOutstanding", "sharesOutstanding", "shares"])
 
     if market_cap is None and current_price is not None and shares_outstanding is not None:
         try:
@@ -521,8 +521,8 @@ def make_ratios(info, hist=None):
         except Exception:
             pass
 
-    fifty_two_high = safe_dict_get(info, ["fiftyTwoWeekHigh", "yearHigh"])
-    fifty_two_low = safe_dict_get(info, ["fiftyTwoWeekLow", "yearLow"])
+    fifty_two_high = safe_dict_get(info, ["fiftyTwoWeekHigh", "yearHigh", "year_high"])
+    fifty_two_low = safe_dict_get(info, ["fiftyTwoWeekLow", "yearLow", "year_low"])
 
     if hist is not None and not hist.empty:
         try:
@@ -764,7 +764,7 @@ def analyse(symbol: str = Query(...)):
         "has_priceToBook": safe_dict_get(info, ["priceToBook"]) is not None,
         "has_heldPercentInsiders": safe_dict_get(info, ["heldPercentInsiders"]) is not None,
         "has_heldPercentInstitutions": safe_dict_get(info, ["heldPercentInstitutions"]) is not None,
-        "has_marketCap": safe_dict_get(info, ["marketCap"]) is not None,
+        "has_marketCap": safe_dict_get(info, ["marketCap", "market_cap"]) is not None,
         "has_sharesOutstanding": safe_dict_get(info, ["sharesOutstanding", "shares"]) is not None,
     }
 
