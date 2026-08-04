@@ -1,826 +1,662 @@
-from fastapi import FastAPI, Query
-from fastapi.middleware.cors import CORSMiddleware
-import yfinance as yf
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
-import pandas as pd
-import requests
-from io import StringIO
-import numpy as np
 
-app = FastAPI()
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
+
+
+app = FastAPI(title="Stock Analyzer API")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 IST = ZoneInfo("Asia/Kolkata")
-NIFTY500_CSV = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
-
-TECHNIQUES = [
-    "Price above 5 EMA", "Price above 10 EMA", "Price above 20 SMA", "Price above 50 SMA", "Price above 200 SMA",
-    "5 EMA vs 10 EMA", "10 EMA vs 20 EMA", "20 SMA vs 50 SMA", "50 SMA vs 200 SMA", "Slope of 20 SMA",
-    "Slope of 50 SMA", "Higher highs", "Higher lows", "Lower highs", "Lower lows", "Day return positive",
-    "3-day return positive", "5-day return positive", "10-day return positive", "20-day return positive",
-    "RSI 14", "RSI 9", "MACD line above signal", "MACD above zero", "Stochastic %K above %D",
-    "Bollinger upper touch", "Bollinger lower touch", "Bollinger squeeze", "ATR rising", "ATR falling",
-    "Volatility below average", "Volatility above average", "Volume above 20-day avg", "Volume spike",
-    "On-balance volume rising", "OBV falling", "Price-volume confirmation", "VWAP above price",
-    "VWAP below price", "Support bounce", "Resistance break", "Gap up", "Gap down", "Close near high",
-    "Close near low", "Candlestick bullish", "Candlestick bearish", "Doji presence", "Hammer pattern",
-    "Shooting star", "ADX strong trend", "ADX weak trend", "Directional +DI above -DI",
-    "Directional -DI above +DI", "Momentum 3", "Momentum 7", "Momentum 14", "ROC positive",
-    "ROC negative", "52-week high proximity", "52-week low proximity"
-]
 
 
-def clean_number(value):
+TECHNIQUE_INFO = {
+    "VWAP": {
+        "definition": "VWAP estimates the average traded price during a session, weighted by volume.",
+        "how_to_read": "Price above VWAP supports an intraday bullish bias. Price below VWAP supports a bearish bias.",
+        "how_traders_use_it": "Use VWAP as an intraday bias line and as a reference for pullbacks, entries, and exits.",
+    },
+    "EMA 9/20": {
+        "definition": "The 9-period and 20-period exponential moving averages show short-term direction.",
+        "how_to_read": "EMA 9 above EMA 20 supports bullish momentum. EMA 9 below EMA 20 supports bearish momentum.",
+        "how_traders_use_it": "Use EMA 9/20 as a trend filter or pullback confirmation.",
+    },
+    "Volume": {
+        "definition": "Volume shows how much trading activity supports a price move.",
+        "how_to_read": "A move with volume above its recent average is more strongly confirmed than a low-volume move.",
+        "how_traders_use_it": "Compare current volume with the recent average and check whether it confirms price direction.",
+    },
+    "Support-Resistance": {
+        "definition": "Support and resistance are price areas where buying or selling pressure has previously appeared.",
+        "how_to_read": "Support can act as a floor and resistance as a ceiling, but either level can fail.",
+        "how_traders_use_it": "Use these zones to plan entries, stop-loss locations, and targets.",
+    },
+    "ATR": {
+        "definition": "ATR measures typical price movement and volatility, including gaps.",
+        "how_to_read": "Higher ATR means the stock is moving more and may need a wider stop or smaller position.",
+        "how_traders_use_it": "Use ATR for volatility-aware stops, position sizing, and target planning.",
+    },
+    "RSI": {
+        "definition": "RSI measures the speed and change of price movements on a bounded scale.",
+        "how_to_read": "High RSI shows strong or potentially stretched momentum. Low RSI shows weak or potentially stretched momentum.",
+        "how_traders_use_it": "Use RSI with trend and price structure. Do not trade only because RSI is high or low.",
+    },
+    "MACD": {
+        "definition": "MACD compares moving averages to show changes in momentum and trend direction.",
+        "how_to_read": "MACD above its signal line and above zero supports bullish momentum. The opposite supports bearish momentum.",
+        "how_traders_use_it": "Use MACD as confirmation after identifying trend and key price levels.",
+    },
+    "ADX": {
+        "definition": "ADX estimates trend strength rather than directly predicting price direction.",
+        "how_to_read": "Higher ADX suggests a stronger trend. Low ADX often suggests a range or weak trend.",
+        "how_traders_use_it": "Use ADX to decide whether a trend-following setup is worth considering.",
+    },
+    "Breakout": {
+        "definition": "A breakout occurs when price moves beyond an established range or level.",
+        "how_to_read": "A close beyond the level with confirming volume is stronger than a brief move through it.",
+        "how_traders_use_it": "Wait for confirmation or a retest and define the invalidation level before entering.",
+    },
+    "Price Action": {
+        "definition": "Price action reads swings, candles, ranges, and market structure directly from price.",
+        "how_to_read": "Higher highs and higher lows support an uptrend. Lower highs and lower lows support a downtrend.",
+        "how_traders_use_it": "Use price action as the final context check around levels, moving averages, VWAP, and breakouts.",
+    },
+}
+
+
+def is_market_open():
+    now = datetime.now(IST)
+    return (
+        now.weekday() < 5
+        and time(9, 15) <= now.time() <= time(15, 30)
+    )
+
+
+def clean_number(value, digits=2):
     try:
-        if value is None:
+        value = float(value)
+
+        if not np.isfinite(value):
             return None
-        if isinstance(value, (np.floating, float)):
-            if np.isnan(value) or np.isinf(value):
-                return None
-            return round(float(value), 2)
-        if isinstance(value, (np.integer, int)):
-            return int(value)
-        if pd.isna(value):
-            return None
-        if isinstance(value, str):
-            s = value.strip()
-            if s == "":
-                return None
-            return value
-        return round(float(value), 2) if isinstance(value, (int, float)) else value
+
+        return round(value, digits)
     except Exception:
         return None
 
 
-def format_percent(value):
+def normalise_history(data):
+    if data is None or data.empty:
+        return pd.DataFrame()
+
+    data = data.copy()
+
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = [
+            column[0] if isinstance(column, tuple) else column
+            for column in data.columns
+        ]
+
+    data.columns = [str(column).title() for column in data.columns]
+
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    available = [column for column in required if column in data.columns]
+
+    data = data[available]
+    data = data.apply(pd.to_numeric, errors="coerce")
+    data = data.dropna(subset=["Close"])
+
+    return data
+
+
+def get_history(symbol, interval="1d", period="1y"):
     try:
-        if value is None:
-            return None
-        v = float(value)
-        if abs(v) <= 1:
-            v *= 100
-        return f"{round(v, 2)}%"
-    except Exception:
-        return None
+        ticker = yf.Ticker(symbol)
 
+        data = ticker.history(
+            period=period,
+            interval=interval,
+            auto_adjust=False,
+            prepost=False,
+        )
 
-def format_large_number(value):
-    try:
-        if value is None:
-            return None
-        v = float(value)
-        if abs(v) >= 1e12:
-            return f"{round(v / 1e12, 2)}T"
-        if abs(v) >= 1e9:
-            return f"{round(v / 1e9, 2)}B"
-        if abs(v) >= 1e7:
-            return f"{round(v / 1e7, 2)}Cr"
-        if abs(v) >= 1e5:
-            return f"{round(v / 1e5, 2)}L"
-        return f"{round(v, 2)}"
-    except Exception:
-        return clean_number(value)
+        data = normalise_history(data)
 
+        if not data.empty:
+            return data
 
-def safe_dict_get(d, keys, default=None):
-    if not isinstance(d, dict):
-        return default
-    for key in keys:
-        if key in d and d[key] not in [None, "", "N/A", "nan"]:
-            return d[key]
-    return default
-
-
-def get_fast_info_dict(ticker):
-    try:
-        fi = ticker.fast_info
-        if fi is None:
-            return {}
-        try:
-            return dict(fi)
-        except Exception:
-            out = {}
-            for k in dir(fi):
-                if k.startswith("_"):
-                    continue
-                try:
-                    val = getattr(fi, k)
-                    if not callable(val):
-                        out[k] = val
-                except Exception:
-                    pass
-            return out
-    except Exception:
-        return {}
-
-
-def merge_info(ticker):
-    info = {}
-    try:
-        raw = ticker.info or {}
-        if isinstance(raw, dict):
-            info.update(raw)
     except Exception:
         pass
 
-    fast = get_fast_info_dict(ticker)
-    alias_map = {
-        "market_cap": "marketCap",
-        "last_price": "currentPrice",
-        "previous_close": "previousClose",
-        "shares": "sharesOutstanding",
-        "currency": "currency",
-        "exchange": "exchange",
-        "year_high": "fiftyTwoWeekHigh",
-        "year_low": "fiftyTwoWeekLow",
+    return pd.DataFrame()
+
+
+def calculate_indicators(data):
+    close = data["Close"].astype(float)
+    high = data["High"].astype(float)
+    low = data["Low"].astype(float)
+    volume = data["Volume"].fillna(0).astype(float)
+
+    ema9 = close.ewm(span=9, adjust=False).mean()
+    ema20 = close.ewm(span=20, adjust=False).mean()
+
+    delta = close.diff()
+
+    gain = delta.clip(lower=0).ewm(
+        alpha=1 / 14,
+        adjust=False,
+    ).mean()
+
+    loss = -delta.clip(upper=0).ewm(
+        alpha=1 / 14,
+        adjust=False,
+    ).mean()
+
+    relative_strength = gain / loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + relative_strength))
+    rsi = rsi.fillna(50)
+
+    macd_line = (
+        close.ewm(span=12, adjust=False).mean()
+        - close.ewm(span=26, adjust=False).mean()
+    )
+
+    macd_signal = macd_line.ewm(
+        span=9,
+        adjust=False,
+    ).mean()
+
+    previous_close = close.shift(1)
+
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    atr = true_range.rolling(
+        window=14,
+        min_periods=5,
+    ).mean()
+
+    up_move = high.diff()
+    down_move = -low.diff()
+
+    plus_dm = up_move.where(
+        (up_move > down_move) & (up_move > 0),
+        0,
+    )
+
+    minus_dm = down_move.where(
+        (down_move > up_move) & (down_move > 0),
+        0,
+    )
+
+    atr14 = true_range.rolling(
+        window=14,
+        min_periods=5,
+    ).mean().replace(0, np.nan)
+
+    plus_di = (
+        100
+        * plus_dm.rolling(14, min_periods=5).sum()
+        / atr14
+    )
+
+    minus_di = (
+        100
+        * minus_dm.rolling(14, min_periods=5).sum()
+        / atr14
+    )
+
+    direction_index = (
+        100
+        * (plus_di - minus_di).abs()
+        / (plus_di + minus_di).replace(0, np.nan)
+    )
+
+    adx = direction_index.rolling(
+        window=14,
+        min_periods=5,
+    ).mean().fillna(0)
+
+    typical_price = (high + low + close) / 3
+
+    cumulative_volume = volume.cumsum().replace(0, np.nan)
+
+    vwap = (
+        typical_price * volume
+    ).cumsum() / cumulative_volume
+
+    average_volume = volume.rolling(
+        window=20,
+        min_periods=5,
+    ).mean()
+
+    support = low.shift(1).rolling(
+        window=20,
+        min_periods=5,
+    ).min()
+
+    resistance = high.shift(1).rolling(
+        window=20,
+        min_periods=5,
+    ).max()
+
+    return {
+        "close": close,
+        "high": high,
+        "low": low,
+        "volume": volume,
+        "ema9": ema9,
+        "ema20": ema20,
+        "rsi": rsi,
+        "macd": macd_line,
+        "macd_signal": macd_signal,
+        "atr": atr,
+        "adx": adx,
+        "plus_di": plus_di,
+        "minus_di": minus_di,
+        "vwap": vwap,
+        "average_volume": average_volume,
+        "support": support,
+        "resistance": resistance,
     }
 
-    for k, v in fast.items():
-        info.setdefault(k, v)
-        if k in alias_map:
-            info.setdefault(alias_map[k], v)
 
-    return info
+def make_technique(name, signal, score, note):
+    info = TECHNIQUE_INFO[name]
 
-
-def load_nifty500_symbols():
-    try:
-        r = requests.get(NIFTY500_CSV, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        df = pd.read_csv(StringIO(r.text))
-        symbol_col = None
-        for c in df.columns:
-            if c.strip().lower() == "symbol":
-                symbol_col = c
-                break
-        if symbol_col is None:
-            return ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"]
-        syms = df[symbol_col].astype(str).str.strip().tolist()
-        syms = [s for s in syms if s and s.lower() != "nan"]
-        syms = [s + ".NS" if not s.endswith(".NS") else s for s in syms]
-        return sorted(list(dict.fromkeys(syms)))
-    except Exception:
-        return ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"]
+    return {
+        "name": name,
+        "signal": signal,
+        "verdict": signal,
+        "score": round(float(score), 1),
+        "note": note,
+        "definition": info["definition"],
+        "how_to_read": info["how_to_read"],
+        "how_traders_use_it": info["how_traders_use_it"],
+    }
 
 
-def get_history(symbol, interval, period):
-    t = yf.Ticker(symbol)
-    hist = t.history(interval=interval, period=period, auto_adjust=False, prepost=False)
-    if hist is None or hist.empty:
-        hist = t.history(interval="1d", period="6mo", auto_adjust=False, prepost=False)
-    if hist is None or hist.empty:
-        return pd.DataFrame()
-    return hist.dropna(how="all")
+def compute_techniques(data):
+    if len(data) < 20:
+        return [
+            make_technique(
+                name,
+                "Neutral",
+                50,
+                "Not enough data.",
+            )
+            for name in TECHNIQUE_INFO
+        ]
 
+    values = calculate_indicators(data)
 
-def safe(series):
-    return pd.Series(series).dropna()
+    close = values["close"]
+    high = values["high"]
+    low = values["low"]
+    volume = values["volume"]
 
+    last = float(close.iloc[-1])
+    previous = float(close.iloc[-2])
 
-def compute_techniques(df):
-    close = safe(df["Close"])
-    high = safe(df["High"]) if "High" in df else close
-    low = safe(df["Low"]) if "Low" in df else close
-    vol = safe(df["Volume"]) if "Volume" in df else pd.Series(dtype=float)
-    n = len(close)
-    out = []
+    ema9 = float(values["ema9"].iloc[-1])
+    ema20 = float(values["ema20"].iloc[-1])
 
-    def add(name, signal, score, note):
-        out.append({"name": name, "signal": signal, "score": round(float(score), 1), "note": note})
+    rsi = float(values["rsi"].iloc[-1])
 
-    if n < 5:
-        for t in TECHNIQUES:
-            add(t, "Neutral", 50, "Not enough data")
-        return out
+    macd = float(values["macd"].iloc[-1])
+    macd_signal = float(values["macd_signal"].iloc[-1])
 
-    ema5 = close.ewm(span=5, adjust=False).mean().iloc[-1]
-    ema10 = close.ewm(span=10, adjust=False).mean().iloc[-1]
-    ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-    sma20 = close.rolling(20).mean().iloc[-1] if n >= 20 else close.mean()
-    sma50 = close.rolling(50).mean().iloc[-1] if n >= 50 else close.mean()
-    sma200 = close.rolling(200).mean().iloc[-1] if n >= 200 else close.mean()
-    r = close.pct_change().dropna()
-    ma20 = sma20
-    ma50 = sma50
-    ma200 = sma200
+    atr_series = values["atr"].dropna()
+    atr = float(atr_series.iloc[-1]) if not atr_series.empty else 0
 
-    rsi14 = None
-    if n >= 15:
-        delta = close.diff()
-        gain = delta.clip(lower=0).rolling(14).mean().iloc[-1]
-        loss = (-delta.clip(upper=0)).rolling(14).mean().iloc[-1]
-        rs = gain / loss if loss and loss > 0 else 999
-        rsi14 = 100 - (100 / (1 + rs))
+    adx = float(values["adx"].iloc[-1])
+    plus_di = float(values["plus_di"].iloc[-1] or 0)
+    minus_di = float(values["minus_di"].iloc[-1] or 0)
 
-    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
-    macd_sig = macd.ewm(span=9, adjust=False).mean()
-    macd_v = macd.iloc[-1]
-    macd_s = macd_sig.iloc[-1]
+    vwap_value = values["vwap"].iloc[-1]
+    vwap = float(vwap_value) if pd.notna(vwap_value) else last
 
-    std20 = close.rolling(20).std().iloc[-1] if n >= 20 else r.std()
-    upper = ma20 + 2 * std20 if pd.notna(std20) else close.max()
-    lower = ma20 - 2 * std20 if pd.notna(std20) else close.min()
-    atr = (high - low).rolling(14).mean().iloc[-1] if len(high) >= 14 and len(low) >= 14 else (high - low).mean()
-    vol20 = vol.rolling(20).mean().iloc[-1] if len(vol) >= 20 else (vol.mean() if len(vol) else 0)
-
-    last = close.iloc[-1]
-    prev = close.iloc[-2]
-    prev3 = close.iloc[-4] if n >= 4 else prev
-    prev5 = close.iloc[-6] if n >= 6 else prev
-    prev10 = close.iloc[-11] if n >= 11 else prev
-    prev20 = close.iloc[-21] if n >= 21 else prev
-
-    roc = (last / prev10 - 1) * 100 if prev10 else 0
-    momentum3 = last - prev3
-    momentum7 = last - (close.iloc[-8] if n >= 8 else prev)
-    momentum14 = last - (close.iloc[-15] if n >= 15 else prev)
-    supports = close.rolling(20).min().iloc[-1] if n >= 20 else close.min()
-    resist = close.rolling(20).max().iloc[-1] if n >= 20 else close.max()
-    near_high = last >= close.rolling(52).max().iloc[-1] * 0.95 if n >= 52 else last >= close.max() * 0.95
-    near_low = last <= close.rolling(52).min().iloc[-1] * 1.05 if n >= 52 else last <= close.min() * 1.05
-    bullish_candle = last > prev
-    bearish_candle = last < prev
-    doji = abs(last - prev) / prev < 0.002 if prev else False
-    hammer = (last > prev) and ((last - low.iloc[-1]) > 2 * abs(last - prev)) if len(low) else False
-    shooting = (last < prev) and ((high.iloc[-1] - last) > 2 * abs(last - prev)) if len(high) else False
-
-    adx = abs(
-        (high.diff().abs().rolling(14).mean().iloc[-1] if len(high) >= 14 else 0)
-        - (low.diff().abs().rolling(14).mean().iloc[-1] if len(low) >= 14 else 0)
+    average_volume_value = values["average_volume"].iloc[-1]
+    average_volume = (
+        float(average_volume_value)
+        if pd.notna(average_volume_value)
+        else 0
     )
-    plus_di = high.diff().clip(lower=0).rolling(14).mean().iloc[-1] if len(high) >= 14 else 0
-    minus_di = (-low.diff().clip(upper=0)).rolling(14).mean().iloc[-1] if len(low) >= 14 else 0
 
-    for t in TECHNIQUES:
-        if t == "Price above 5 EMA":
-            add(t, "Bullish" if last > ema5 else "Bearish", 70 if last > ema5 else 30, "Latest close vs EMA5")
-        elif t == "Price above 10 EMA":
-            add(t, "Bullish" if last > ema10 else "Bearish", 68 if last > ema10 else 32, "Latest close vs EMA10")
-        elif t == "Price above 20 SMA":
-            add(t, "Bullish" if last > ma20 else "Bearish", 66 if last > ma20 else 34, "Latest close vs SMA20")
-        elif t == "Price above 50 SMA":
-            add(t, "Bullish" if last > ma50 else "Bearish", 64 if last > ma50 else 36, "Latest close vs SMA50")
-        elif t == "Price above 200 SMA":
-            add(t, "Bullish" if last > ma200 else "Bearish", 62 if last > ma200 else 38, "Latest close vs SMA200")
-        elif t == "5 EMA vs 10 EMA":
-            add(t, "Bullish" if ema5 > ema10 else "Bearish", 68 if ema5 > ema10 else 32, "EMA5 and EMA10 crossover state")
-        elif t == "10 EMA vs 20 EMA":
-            add(t, "Bullish" if ema10 > ema20 else "Bearish", 66 if ema10 > ema20 else 34, "EMA10 vs EMA20")
-        elif t == "20 SMA vs 50 SMA":
-            add(t, "Bullish" if ma20 > ma50 else "Bearish", 65 if ma20 > ma50 else 35, "SMA20 vs SMA50")
-        elif t == "50 SMA vs 200 SMA":
-            add(t, "Bullish" if ma50 > ma200 else "Bearish", 63 if ma50 > ma200 else 37, "SMA50 vs SMA200")
-        elif t == "Slope of 20 SMA":
-            v = ma20 > close.rolling(20).mean().shift(5).iloc[-1] if n >= 25 else False
-            add(t, "Bullish" if v else "Bearish", 62 if v else 50, "20-SMA recent slope")
-        elif t == "Slope of 50 SMA":
-            v = ma50 > close.rolling(50).mean().shift(5).iloc[-1] if n >= 55 else False
-            add(t, "Bullish" if v else "Bearish", 61 if v else 50, "50-SMA recent slope")
-        elif t == "Higher highs":
-            v = high.iloc[-1] >= high.tail(5).max()
-            add(t, "Bullish" if v else "Neutral", 60 if v else 40, "Recent highs pattern")
-        elif t == "Higher lows":
-            v = low.iloc[-1] >= low.tail(5).min()
-            add(t, "Bullish" if v else "Neutral", 60 if v else 40, "Recent lows pattern")
-        elif t == "Lower highs":
-            v = high.iloc[-1] < high.tail(5).max()
-            add(t, "Bearish" if v else "Neutral", 40 if v else 60, "Recent highs pattern")
-        elif t == "Lower lows":
-            v = low.iloc[-1] < low.tail(5).min()
-            add(t, "Bearish" if v else "Neutral", 40 if v else 60, "Recent lows pattern")
-        elif t == "Day return positive":
-            v = last > prev
-            add(t, "Bullish" if v else "Bearish", 62 if v else 38, "Latest day return")
-        elif t == "3-day return positive":
-            v = last > prev3
-            add(t, "Bullish" if v else "Bearish", 61 if v else 39, "3-day change")
-        elif t == "5-day return positive":
-            v = last > prev5
-            add(t, "Bullish" if v else "Bearish", 60 if v else 40, "5-day change")
-        elif t == "10-day return positive":
-            v = last > prev10
-            add(t, "Bullish" if v else "Bearish", 59 if v else 41, "10-day change")
-        elif t == "20-day return positive":
-            v = last > prev20
-            add(t, "Bullish" if v else "Bearish", 58 if v else 42, "20-day change")
-        elif t == "RSI 14":
-            score = 70 - abs((rsi14 or 50) - 50)
-            add(t, "Bullish" if (rsi14 or 50) < 70 else "Bearish", score, "RSI14")
-        elif t == "RSI 9":
-            add(t, "Neutral", 50, "Placeholder RSI9")
-        elif t == "MACD line above signal":
-            v = macd_v > macd_s
-            add(t, "Bullish" if v else "Bearish", 67 if v else 33, "MACD crossover")
-        elif t == "MACD above zero":
-            v = macd_v > 0
-            add(t, "Bullish" if v else "Bearish", 66 if v else 34, "MACD level")
-        elif t == "Stochastic %K above %D":
-            v = last > prev
-            add(t, "Bullish" if v else "Bearish", 60 if v else 40, "Stochastic proxy")
-        elif t == "Bollinger upper touch":
-            v = last >= upper
-            add(t, "Neutral", 55 if v else 45, "Upper band touch")
-        elif t == "Bollinger lower touch":
-            v = last <= lower
-            add(t, "Neutral", 55 if v else 45, "Lower band touch")
-        elif t == "Bollinger squeeze":
-            v = (upper - lower) / last < 0.08 if last else False
-            add(t, "Neutral", 55 if v else 45, "Band width")
-        elif t == "ATR rising":
-            v = atr > (high - low).rolling(14).mean().shift(5).iloc[-1] if len(high) >= 19 else False
-            add(t, "Neutral", 55 if v else 50, "ATR trend")
-        elif t == "ATR falling":
-            v = atr < (high - low).rolling(14).mean().shift(5).iloc[-1] if len(high) >= 19 else False
-            add(t, "Neutral", 55 if v else 50, "ATR trend")
-        elif t == "Volatility below average":
-            v = r.std() < r.rolling(20).std().mean() if len(r) >= 20 else False
-            add(t, "Bullish" if v else "Neutral", 58 if v else 50, "Return volatility")
-        elif t == "Volatility above average":
-            v = r.std() > r.rolling(20).std().mean() if len(r) >= 20 else False
-            add(t, "Bearish" if v else "Neutral", 58 if v else 50, "Return volatility")
-        elif t == "Volume above 20-day avg":
-            v = len(vol) and vol.iloc[-1] > vol20
-            add(t, "Bullish" if v else "Neutral", 60 if v else 40, "Volume vs avg")
-        elif t == "Volume spike":
-            v = len(vol) and vol.iloc[-1] > (vol20 * 1.5 if vol20 else vol.iloc[-1])
-            add(t, "Bullish" if v else "Neutral", 58 if v else 42, "Volume spike")
-        elif t == "On-balance volume rising":
-            v = len(vol) and vol.tail(5).sum() > vol.tail(10).head(5).sum() if len(vol) >= 10 else False
-            add(t, "Bullish" if v else "Neutral", 57 if v else 50, "OBV proxy")
-        elif t == "OBV falling":
-            v = len(vol) and vol.tail(5).sum() < vol.tail(10).head(5).sum() if len(vol) >= 10 else False
-            add(t, "Bearish" if v else "Neutral", 57 if v else 50, "OBV proxy")
-        elif t == "Price-volume confirmation":
-            v = (last > prev) and (len(vol) and vol.iloc[-1] > vol20)
-            add(t, "Bullish" if v else "Bearish", 61 if v else 39, "Price with volume")
-        elif t == "VWAP above price":
-            v = last < close.mean()
-            add(t, "Bearish" if v else "Neutral", 54 if v else 46, "VWAP proxy")
-        elif t == "VWAP below price":
-            v = last > close.mean()
-            add(t, "Bullish" if v else "Neutral", 54 if v else 46, "VWAP proxy")
-        elif t == "Support bounce":
-            v = last > supports
-            add(t, "Bullish" if v else "Bearish", 60 if v else 40, "Support zone")
-        elif t == "Resistance break":
-            v = last > resist
-            add(t, "Bullish" if v else "Neutral", 60 if v else 40, "Resistance zone")
-        elif t == "Gap up":
-            v = last > prev * 1.01
-            add(t, "Bullish" if v else "Neutral", 56 if v else 44, "Gap proxy")
-        elif t == "Gap down":
-            v = last < prev * 0.99
-            add(t, "Bearish" if v else "Neutral", 56 if v else 44, "Gap proxy")
-        elif t == "Close near high":
-            v = last >= close.tail(20).max() * 0.97
-            add(t, "Bullish" if v else "Neutral", 57 if v else 43, "Near recent high")
-        elif t == "Close near low":
-            v = last <= close.tail(20).min() * 1.03
-            add(t, "Bearish" if v else "Neutral", 57 if v else 43, "Near recent low")
-        elif t == "Candlestick bullish":
-            v = bullish_candle
-            add(t, "Bullish" if v else "Neutral", 55 if v else 45, "Bullish candle proxy")
-        elif t == "Candlestick bearish":
-            v = bearish_candle
-            add(t, "Bearish" if v else "Neutral", 55 if v else 45, "Bearish candle proxy")
-        elif t == "Doji presence":
-            v = doji
-            add(t, "Neutral", 52 if v else 48, "Doji proxy")
-        elif t == "Hammer pattern":
-            v = hammer
-            add(t, "Bullish" if v else "Neutral", 58 if v else 42, "Hammer proxy")
-        elif t == "Shooting star":
-            v = shooting
-            add(t, "Bearish" if v else "Neutral", 58 if v else 42, "Shooting star proxy")
-        elif t == "ADX strong trend":
-            v = adx > 1
-            add(t, "Bullish" if v else "Neutral", 60 if v else 40, "ADX proxy")
-        elif t == "ADX weak trend":
-            v = adx <= 1
-            add(t, "Neutral", 60 if v else 40, "ADX proxy")
-        elif t == "Directional +DI above -DI":
-            v = plus_di > minus_di
-            add(t, "Bullish" if v else "Bearish", 61 if v else 39, "+DI vs -DI")
-        elif t == "Directional -DI above +DI":
-            v = minus_di > plus_di
-            add(t, "Bearish" if v else "Bullish", 61 if v else 39, "-DI vs +DI")
-        elif t == "Momentum 3":
-            v = momentum3 > 0
-            add(t, "Bullish" if v else "Bearish", 59 if v else 41, "3-period momentum")
-        elif t == "Momentum 7":
-            v = momentum7 > 0
-            add(t, "Bullish" if v else "Bearish", 59 if v else 41, "7-period momentum")
-        elif t == "Momentum 14":
-            v = momentum14 > 0
-            add(t, "Bullish" if v else "Bearish", 59 if v else 41, "14-period momentum")
-        elif t == "ROC positive":
-            v = roc > 0
-            add(t, "Bullish" if v else "Bearish", 60 if v else 40, "Rate of change")
-        elif t == "ROC negative":
-            v = roc < 0
-            add(t, "Bearish" if v else "Bullish", 60 if v else 40, "Rate of change")
-        elif t == "52-week high proximity":
-            v = near_high
-            add(t, "Bullish" if v else "Neutral", 58 if v else 42, "52-week high proximity")
-        elif t == "52-week low proximity":
-            v = near_low
-            add(t, "Bearish" if v else "Neutral", 58 if v else 42, "52-week low proximity")
-        else:
-            add(t, "Neutral", 50, "Generic")
+    support_value = values["support"].iloc[-1]
+    resistance_value = values["resistance"].iloc[-1]
 
-    return out
+    support = (
+        float(support_value)
+        if pd.notna(support_value)
+        else last
+    )
 
+    resistance = (
+        float(resistance_value)
+        if pd.notna(resistance_value)
+        else last
+    )
 
-def statement_to_list(df, limit=8):
-    try:
-        if df is None or df.empty:
-            return []
-        x = df.copy().replace([np.inf, -np.inf], np.nan).fillna(np.nan)
-        cols = list(x.columns)[:limit]
-        out = []
-        for row_name in x.index[:20]:
-            item = {"metric": str(row_name)}
-            has_value = False
-            for col in cols:
-                key = str(col.date()) if hasattr(col, "date") else str(col)
-                val = clean_number(x.loc[row_name, col])
-                item[key] = val
-                if val is not None:
-                    has_value = True
-            if has_value:
-                out.append(item)
-        return out
-    except Exception:
-        return []
+    current_volume = float(volume.iloc[-1])
 
+    volume_confirmed = (
+        current_volume > average_volume
+        if average_volume > 0
+        else False
+    )
 
-def make_quarterly_data(quarterly_financials):
-    rows = statement_to_list(quarterly_financials, limit=4)
-    return rows[:12]
+    ema_bullish = ema9 > ema20
+    price_above_vwap = last > vwap
 
+    rsi_bullish = 50 <= rsi < 70
+    rsi_bearish = rsi < 40 or rsi > 75
 
-def make_corp_action(actions_df):
-    try:
-        if actions_df is None or actions_df.empty:
-            return []
-        df = actions_df.reset_index().fillna("")
-        out = []
-        for _, row in df.tail(10).iterrows():
-            date_col = row.iloc[0]
-            action = None
-            value = None
-            for col in df.columns[1:]:
-                if row[col] not in ["", None, 0]:
-                    action = str(col)
-                    value = clean_number(row[col])
-                    break
-            out.append({
-                "date": str(date_col.date()) if hasattr(date_col, "date") else str(date_col),
-                "action": action or "Corporate action",
-                "value": value
-            })
-        return out[::-1]
-    except Exception:
-        return []
+    macd_bullish = (
+        macd > macd_signal
+        and macd > 0
+    )
 
+    macd_bearish = (
+        macd < macd_signal
+        and macd < 0
+    )
 
-def make_news(news_items):
-    out = []
-    try:
-        for item in (news_items or [])[:10]:
-            content = item.get("content", item)
-            title = content.get("title") or item.get("title")
-            url = content.get("canonicalUrl", {}).get("url") or content.get("clickThroughUrl", {}).get("url") or item.get("link")
-            publisher = content.get("provider", {}).get("displayName") or content.get("publisher")
-            pub_date = content.get("pubDate") or item.get("providerPublishTime")
-            summary = content.get("summary") or ""
-            if title:
-                out.append({
-                    "title": title,
-                    "publisher": publisher,
-                    "link": url,
-                    "published": str(pub_date) if pub_date is not None else None,
-                    "summary": summary[:220] if summary else ""
-                })
-    except Exception:
-        return []
-    return out
+    adx_bullish = adx >= 20 and plus_di > minus_di
+    adx_bearish = adx >= 20 and minus_di > plus_di
 
+    breakout_bullish = (
+        last > resistance
+        and volume_confirmed
+    )
 
-def make_ratios(info, hist=None):
-    current_price = safe_dict_get(info, ["currentPrice", "lastPrice", "regularMarketPrice", "last_price"])
-    previous_close = safe_dict_get(info, ["previousClose", "regularMarketPreviousClose", "previous_close"])
-    market_cap = safe_dict_get(info, ["marketCap", "market_cap"])
-    shares_outstanding = safe_dict_get(info, ["sharesOutstanding", "shares"])
+    breakout_bearish = (
+        last < support
+        and volume_confirmed
+    )
 
-    if market_cap is None and current_price is not None and shares_outstanding is not None:
-        try:
-            market_cap = float(current_price) * float(shares_outstanding)
-        except Exception:
-            pass
+    price_action_bullish = (
+        last > previous
+        and last > float(close.iloc[-3])
+    )
 
-    fifty_two_high = safe_dict_get(info, ["fiftyTwoWeekHigh", "yearHigh", "year_high"])
-    fifty_two_low = safe_dict_get(info, ["fiftyTwoWeekLow", "yearLow", "year_low"])
+    price_action_bearish = (
+        last < previous
+        and last < float(close.iloc[-3])
+    )
 
-    if hist is not None and not hist.empty:
-        try:
-            h52 = hist["High"].tail(252).max()
-            l52 = hist["Low"].tail(252).min()
-            fifty_two_high = fifty_two_high if fifty_two_high is not None else clean_number(h52)
-            fifty_two_low = fifty_two_low if fifty_two_low is not None else clean_number(l52)
-        except Exception:
-            pass
+    if last > support and last > previous:
+        sr_signal = "Bullish"
+        sr_score = 65
+    elif last < support:
+        sr_signal = "Bearish"
+        sr_score = 35
+    else:
+        sr_signal = "Neutral"
+        sr_score = 50
 
-    items = [
-        ("Market Cap", format_large_number(market_cap)),
-        ("Current Price", clean_number(current_price)),
-        ("Previous Close", clean_number(previous_close)),
-        ("Trailing PE", clean_number(safe_dict_get(info, ["trailingPE"]))),
-        ("Forward PE", clean_number(safe_dict_get(info, ["forwardPE"]))),
-        ("Price to Book", clean_number(safe_dict_get(info, ["priceToBook"]))),
-        ("Dividend Yield", format_percent(safe_dict_get(info, ["dividendYield"]))),
-        ("ROE", format_percent(safe_dict_get(info, ["returnOnEquity"]))),
-        ("ROA", format_percent(safe_dict_get(info, ["returnOnAssets"]))),
-        ("Debt to Equity", clean_number(safe_dict_get(info, ["debtToEquity"]))),
-        ("Current Ratio", clean_number(safe_dict_get(info, ["currentRatio"]))),
-        ("Quick Ratio", clean_number(safe_dict_get(info, ["quickRatio"]))),
-        ("Profit Margin", format_percent(safe_dict_get(info, ["profitMargins"]))),
-        ("Operating Margin", format_percent(safe_dict_get(info, ["operatingMargins"]))),
-        ("Revenue Growth", format_percent(safe_dict_get(info, ["revenueGrowth"]))),
-        ("Earnings Growth", format_percent(safe_dict_get(info, ["earningsGrowth"]))),
-        ("52 Week High", clean_number(fifty_two_high)),
-        ("52 Week Low", clean_number(fifty_two_low)),
+    if breakout_bullish:
+        breakout_signal = "Bullish"
+        breakout_score = 75
+    elif breakout_bearish:
+        breakout_signal = "Bearish"
+        breakout_score = 25
+    else:
+        breakout_signal = "Neutral"
+        breakout_score = 50
+
+    if price_action_bullish:
+        price_action_signal = "Bullish"
+        price_action_score = 65
+    elif price_action_bearish:
+        price_action_signal = "Bearish"
+        price_action_score = 35
+    else:
+        price_action_signal = "Neutral"
+        price_action_score = 50
+
+    return [
+        make_technique(
+            "VWAP",
+            "Bullish" if price_above_vwap else "Bearish",
+            70 if price_above_vwap else 30,
+            f"Close {last:.2f}; VWAP {vwap:.2f}.",
+        ),
+        make_technique(
+            "EMA 9/20",
+            "Bullish" if ema_bullish else "Bearish",
+            70 if ema_bullish else 30,
+            f"EMA9 {ema9:.2f}; EMA20 {ema20:.2f}.",
+        ),
+        make_technique(
+            "Volume",
+            "Bullish" if volume_confirmed else "Neutral",
+            68 if volume_confirmed else 45,
+            f"Current volume {current_volume:.0f}; average {average_volume:.0f}.",
+        ),
+        make_technique(
+            "Support-Resistance",
+            sr_signal,
+            sr_score,
+            f"Support {support:.2f}; resistance {resistance:.2f}.",
+        ),
+        make_technique(
+            "ATR",
+            "Neutral",
+            50,
+            f"ATR is {atr:.2f}. ATR measures volatility, not direction.",
+        ),
+        make_technique(
+            "RSI",
+            "Bullish" if rsi_bullish else "Bearish" if rsi_bearish else "Neutral",
+            65 if rsi_bullish else 35 if rsi_bearish else 50,
+            f"RSI14 is {rsi:.2f}.",
+        ),
+        make_technique(
+            "MACD",
+            "Bullish" if macd_bullish else "Bearish" if macd_bearish else "Neutral",
+            68 if macd_bullish else 32 if macd_bearish else 50,
+            f"MACD {macd:.3f}; signal {macd_signal:.3f}.",
+        ),
+        make_technique(
+            "ADX",
+            "Bullish" if adx_bullish else "Bearish" if adx_bearish else "Neutral",
+            65 if adx_bullish else 35 if adx_bearish else 50,
+            f"ADX {adx:.2f}; +DI {plus_di:.2f}; -DI {minus_di:.2f}.",
+        ),
+        make_technique(
+            "Breakout",
+            breakout_signal,
+            breakout_score,
+            f"Close {last:.2f}; resistance {resistance:.2f}; support {support:.2f}.",
+        ),
+        make_technique(
+            "Price Action",
+            price_action_signal,
+            price_action_score,
+            "Based on recent price movement and short-term structure.",
+        ),
     ]
 
-    out = [{"label": k, "value": v} for k, v in items if v is not None]
-    if not out:
-        out = [{"label": "Status", "value": "Yahoo fundamentals unavailable for this symbol"}]
-    return out
 
+def overall_scores(techniques):
+    scores = np.array(
+        [item["score"] for item in techniques],
+        dtype=float,
+    )
 
-def make_shareholding(info):
-    insiders = safe_dict_get(info, ["heldPercentInsiders"])
-    institutions = safe_dict_get(info, ["heldPercentInstitutions"])
-    float_shares = safe_dict_get(info, ["floatShares"])
-    shares_outstanding = safe_dict_get(info, ["sharesOutstanding", "shares"])
-    implied_shares = safe_dict_get(info, ["impliedSharesOutstanding"])
+    overall = float(scores.mean()) if len(scores) else 50
+    short_score = float(scores[:5].mean())
+    long_score = float(scores[5:].mean())
 
-    holders = [
-        ("Promoter / Insider Holding", format_percent(insiders)),
-        ("Institution Holding", format_percent(institutions)),
-        ("Float Shares", format_large_number(float_shares)),
-        ("Shares Outstanding", format_large_number(shares_outstanding)),
-        ("Implied Shares Outstanding", format_large_number(implied_shares)),
-    ]
+    bullish_count = sum(
+        item["signal"] == "Bullish"
+        for item in techniques
+    )
 
-    out = [{"label": k, "value": v} for k, v in holders if v is not None]
-    if not out:
-        out = [{"label": "Status", "value": "Shareholding data unavailable from Yahoo"}]
-    return out
+    bearish_count = sum(
+        item["signal"] == "Bearish"
+        for item in techniques
+    )
 
+    if overall >= 62 and bullish_count >= bearish_count + 2:
+        signal = "Bullish"
+    elif overall <= 38 and bearish_count >= bullish_count + 2:
+        signal = "Bearish"
+    else:
+        signal = "Neutral"
 
-def make_investors(info):
-    items = [
-        ("Company", safe_dict_get(info, ["longName", "shortName"])),
-        ("Sector", safe_dict_get(info, ["sector"])),
-        ("Industry", safe_dict_get(info, ["industry"])),
-        ("Website", safe_dict_get(info, ["website"])),
-        ("Country", safe_dict_get(info, ["country"])),
-        ("Employees", clean_number(safe_dict_get(info, ["fullTimeEmployees"]))),
-        ("Exchange", safe_dict_get(info, ["exchange"])),
-        ("Currency", safe_dict_get(info, ["currency"])),
-    ]
-    out = [{"label": k, "value": v} for k, v in items if v is not None]
-    if not out:
-        out = [{"label": "Status", "value": "Investor profile unavailable"}]
-    return out
+    risk_score = 50 + abs(bullish_count - bearish_count) * 3
+    risk_score = min(100, max(0, risk_score))
 
-
-def make_reports(symbol, info):
-    website = safe_dict_get(info, ["website"])
-    company_name = safe_dict_get(info, ["longName", "shortName"], symbol.upper())
-    reports = []
-    if website:
-        reports.append({
-            "title": f"{company_name} Website",
-            "type": "Company",
-            "link": website
-        })
-    reports.append({
-        "title": f"{company_name} on Yahoo Finance",
-        "type": "Market profile",
-        "link": f"https://finance.yahoo.com/quote/{symbol}"
-    })
-    return reports
+    return (
+        round(overall, 1),
+        round(short_score, 1),
+        round(long_score, 1),
+        round(risk_score, 1),
+        signal,
+    )
 
 
 @app.get("/")
-def home():
-    return {"status": "ok", "message": "Stock analyser backend running"}
-
-
-@app.get("/api/yahoo/list")
-def ticker_list():
-    syms = load_nifty500_symbols()
-    return {"count": len(syms), "symbols": syms, "sample": syms[:20]}
+def root():
+    return {
+        "status": "ok",
+        "message": "Stock Analyzer backend running",
+    }
 
 
 @app.get("/api/yahoo/quote")
 def quote(symbol: str = Query(...)):
-    now = datetime.now(IST)
-    is_open = now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30)
+    symbol = symbol.strip().upper()
+    data = get_history(symbol, "1d", "1mo")
 
-    ticker = yf.Ticker(symbol)
-    hist = get_history(symbol, "1d", "1mo")
-    if hist.empty:
-        return {"symbol": symbol.upper(), "error": "No data"}
+    if data.empty:
+        return {
+            "symbol": symbol,
+            "error": "No data found for this symbol.",
+        }
 
-    latest_price = None
-    previous_close = None
-    source = "yfinance history"
+    latest_price = float(data["Close"].iloc[-1])
 
-    try:
-        fi = get_fast_info_dict(ticker)
-        latest_price = safe_dict_get(fi, ["lastPrice", "last_price", "regularMarketPrice"])
-        previous_close = safe_dict_get(fi, ["previousClose", "previous_close", "regularMarketPreviousClose"])
-        if latest_price is not None:
-            source = "yfinance fast_info"
-    except Exception:
-        pass
-
-    if latest_price is None:
-        latest_price = clean_number(hist.iloc[-1]["Close"])
-
-    if previous_close is None:
-        previous_close = clean_number(hist.iloc[-2]["Close"]) if len(hist) > 1 else latest_price
+    previous_close = (
+        float(data["Close"].iloc[-2])
+        if len(data) > 1
+        else latest_price
+    )
 
     return {
-        "symbol": symbol.upper(),
+        "symbol": symbol,
         "price": clean_number(latest_price),
         "previousClose": clean_number(previous_close),
-        "market_status": "open" if is_open else "closed",
-        "timestamp": str(hist.index[-1]),
-        "source": source
+        "market_status": "open" if is_market_open() else "closed",
+        "timestamp": str(data.index[-1]),
+        "source": "yfinance",
     }
 
 
 @app.get("/api/yahoo/analyse")
 def analyse(symbol: str = Query(...)):
-    now = datetime.now(IST)
-    is_open = now.weekday() < 5 and time(9, 15) <= now.time() <= time(15, 30)
-    interval = "30m" if is_open else "1d"
-    period = "5d" if is_open else "6mo"
+    symbol = symbol.strip().upper()
 
-    ticker = yf.Ticker(symbol)
-    hist = get_history(symbol, interval, period)
-    if hist.empty:
-        return {"symbol": symbol.upper(), "error": "No data"}
+    market_open = is_market_open()
 
-    techs = compute_techniques(hist)
-    scores = [t["score"] for t in techs]
-    overall = round(float(np.mean(scores)), 1)
-    short = round(float(np.mean(scores[:20])), 1)
-    long = round(float(np.mean(scores[20:40])), 1)
-    risk = round(float(np.mean(scores[40:])), 1)
+    interval = "5m" if market_open else "1d"
+    period = "5d" if market_open else "1y"
 
-    info = merge_info(ticker)
+    data = get_history(symbol, interval, period)
 
-    fund_parts = [
-        safe_dict_get(info, ["returnOnEquity"]),
-        safe_dict_get(info, ["profitMargins"]),
-        safe_dict_get(info, ["operatingMargins"]),
-        safe_dict_get(info, ["revenueGrowth"]),
-        safe_dict_get(info, ["earningsGrowth"]),
-    ]
+    if data.empty or len(data) < 20:
+        data = get_history(symbol, "1d", "1y")
 
-    fund_values = []
-    for x in fund_parts:
-        try:
-            fx = float(x)
-            fund_values.append(fx * 100 if abs(fx) <= 1 else fx)
-        except Exception:
-            pass
+    if data.empty:
+        return {
+            "symbol": symbol,
+            "error": "No data found for this symbol.",
+        }
 
-    fund = round(float(np.mean(fund_values)), 1) if fund_values else 50.0
-    fund = max(0.0, min(100.0, fund))
+    techniques = compute_techniques(data)
 
-    signal = "Bullish" if overall >= 70 else "Positive" if overall >= 55 else "Neutral" if overall >= 42 else "Cautious"
-    verdict_reason = (
-        "Strong technical mix with broad confirmation." if signal == "Bullish"
-        else "Constructive setup with more positives than negatives." if signal == "Positive"
-        else "Mixed signals across trend, momentum, and risk." if signal == "Neutral"
-        else "Weak trend or elevated risk across multiple techniques."
+    overall, short_score, long_score, risk_score, signal = (
+        overall_scores(techniques)
     )
 
-    quarterly_fin = None
-    yearly_fin = None
-    balance_sheet = None
-    cashflow = None
-    actions = None
-    news_items = []
+    bullish_count = sum(
+        item["signal"] == "Bullish"
+        for item in techniques
+    )
 
-    try:
-        quarterly_fin = ticker.quarterly_financials
-    except Exception:
-        pass
-    try:
-        yearly_fin = ticker.financials
-    except Exception:
-        pass
-    try:
-        balance_sheet = ticker.balance_sheet
-    except Exception:
-        pass
-    try:
-        cashflow = ticker.cashflow
-    except Exception:
-        pass
-    try:
-        actions = ticker.actions
-    except Exception:
-        pass
-    try:
-        news_items = ticker.news or []
-    except Exception:
-        news_items = []
+    bearish_count = sum(
+        item["signal"] == "Bearish"
+        for item in techniques
+    )
 
-    ratios = make_ratios(info, hist)
-    shareholding = make_shareholding(info)
-    quarterly = make_quarterly_data(quarterly_fin)
-    pnl = statement_to_list(yearly_fin, limit=4)
-    balance_sheet_list = statement_to_list(balance_sheet, limit=4)
-    cashflow_list = statement_to_list(cashflow, limit=4)
-    corp_action = make_corp_action(actions)
-    investors = make_investors(info)
-    reports = make_reports(symbol, info)
-    news = make_news(news_items)
+    neutral_count = 10 - bullish_count - bearish_count
 
-    name = safe_dict_get(info, ["longName", "shortName"], symbol.upper())
-
-    debug = {
-        "info_key_count": len(info.keys()) if isinstance(info, dict) else 0,
-        "has_trailingPE": safe_dict_get(info, ["trailingPE"]) is not None,
-        "has_priceToBook": safe_dict_get(info, ["priceToBook"]) is not None,
-        "has_heldPercentInsiders": safe_dict_get(info, ["heldPercentInsiders"]) is not None,
-        "has_heldPercentInstitutions": safe_dict_get(info, ["heldPercentInstitutions"]) is not None,
-        "has_marketCap": safe_dict_get(info, ["marketCap", "market_cap"]) is not None,
-        "has_sharesOutstanding": safe_dict_get(info, ["sharesOutstanding", "shares"]) is not None,
-    }
+    reason = (
+        f"{bullish_count} bullish, "
+        f"{bearish_count} bearish, and "
+        f"{neutral_count} neutral technique verdicts."
+    )
 
     return {
-        "symbol": symbol.upper(),
-        "name": name,
-        "short": short,
-        "long": long,
-        "fund": fund,
-        "risk": risk,
+        "symbol": symbol,
+        "name": symbol.replace(".NS", ""),
+        "short": short_score,
+        "long": long_score,
+        "risk": risk_score,
         "overall": overall,
         "signal": signal,
-        "techniques": techs,
-        "technique_count": len(techs),
-        "verdict_reason": verdict_reason,
-        "market_status": "open" if is_open else "closed",
-        "close_used": clean_number(hist["Close"].iloc[-1]),
+        "verdict_reason": reason,
+        "techniques": techniques,
+        "technique_count": len(techniques),
         "source": f"yfinance {interval}",
-        "ratios": ratios,
-        "shareholding": shareholding,
-        "quarterly": quarterly,
-        "pnl": pnl,
-        "balanceSheet": balance_sheet_list,
-        "cashflow": cashflow_list,
-        "corpAction": corp_action,
-        "investors": investors,
-        "reports": reports,
-        "news": news,
-        "meta": {
-            "sector": safe_dict_get(info, ["sector"]),
-            "industry": safe_dict_get(info, ["industry"]),
-            "exchange": safe_dict_get(info, ["exchange"]),
-            "currency": safe_dict_get(info, ["currency"]),
-            "website": safe_dict_get(info, ["website"])
-        },
-        "debug": debug
+        "market_status": "open" if market_open else "closed",
     }
 
 
 @app.get("/api/yahoo/chart")
-def chart(symbol: str = Query(...), period: str = Query("1mo"), interval: str = Query("1d")):
-    hist = get_history(symbol, interval, period)
-    if hist.empty:
-        return {"symbol": symbol.upper(), "error": "No data"}
+def chart(
+    symbol: str = Query(...),
+    period: str = Query("1mo"),
+    interval: str = Query("1d"),
+):
+    symbol = symbol.strip().upper()
+    data = get_history(symbol, interval, period)
 
-    hist = hist.reset_index()
-    time_col = hist.columns[0]
-    out = hist[[time_col, "Close"]].copy()
-    out.columns = ["time", "close"]
-    out["time"] = out["time"].astype(str)
+    if data.empty:
+        return {
+            "symbol": symbol,
+            "error": "No data found for this symbol.",
+        }
 
-    return {"symbol": symbol.upper(), "points": out.tail(200).to_dict(orient="records")}
+    points = []
+
+    for index, row in data.tail(300).iterrows():
+        points.append(
+            {
+                "time": str(index),
+                "close": clean_number(row["Close"]),
+            }
+        )
+
+    return {
+        "symbol": symbol,
+        "points": points,
+    }
